@@ -1,8 +1,5 @@
 # AC-FAS: Attention Consistency for Semi-Supervised One-Class Face Anti-Spoofing
 
-**Status:** Under review (IEEE Transactions on Artificial Intelligence).
-
-**Authors:** Mohammadreza (Reza) Sheikhfathollahi, Simon Parkinson, Saad Khan — University of Huddersfield.
 
 ## Abstract
 
