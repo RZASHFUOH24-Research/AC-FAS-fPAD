@@ -14,6 +14,3 @@ Datasets used in the paper:
 - [ ] SiW-Mv2
 - [ ] WMCA
 - [ ] ROSE-Youtu
-
-> TODO: add download links / access instructions and any preprocessing
-> (face detection/cropping) used before training.
