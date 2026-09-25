@@ -39,7 +39,7 @@ challenging cross-domain protocol, whilst maintaining a near-perfect AUC of
 
 ## Method Overview
 
-![AC-FAS attention-consistency pipeline](images/Attention2.jpg)
+![AC-FAS attention-consistency pipeline](images/Attention.jpg)
 
 AC-FAS reframes face anti-spoofing as **semi-supervised one-class anomaly
 detection**: it models the normality of *live* faces, optionally using a
