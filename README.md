@@ -1,5 +1,7 @@
 # AC-FAS: Attention Consistency for Semi-Supervised One-Class Face Anti-Spoofing
 
+**Status:** Under review (IEEE Transactions on Artificial Intelligence).
+
 
 ## Abstract
 
@@ -37,6 +39,8 @@ challenging cross-domain protocol, whilst maintaining a near-perfect AUC of
 
 ## Method Overview
 
+![AC-FAS attention-consistency pipeline](images/Attention2.jpg)
+
 AC-FAS reframes face anti-spoofing as **semi-supervised one-class anomaly
 detection**: it models the normality of *live* faces, optionally using a
 limited set of labelled spoof samples to sharpen the boundary. Three
@@ -46,6 +50,8 @@ components:
    reweighting of the input image using a square (Chebyshev-distance)
    mask, applied dually as deterministic preprocessing (fixed weights) and
    stochastic training-time augmentation (randomly resampled weights).
+
+   ![WFRF pipeline](images/WFRF.jpg)
 2. **Cross-layer Attention Consistency** — the KL divergence between the
    spatial-attention signatures of two selected transformer layers is used
    as a domain-agnostic liveness signal: live faces are regularised toward
