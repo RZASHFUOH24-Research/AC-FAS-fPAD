@@ -193,6 +193,3 @@ the paper text.
 }
 ```
 
-## Contact
-
-Mohammadreza (Reza) Sheikhfathollahi — PhD student, University of Huddersfield.
