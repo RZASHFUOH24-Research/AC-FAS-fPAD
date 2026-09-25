@@ -27,10 +27,10 @@ from wfrf import wfrf_train_batch
 # ==========================================
 # CONFIG — edit these directly, no argparse
 # ==========================================
-TRAIN_FOLDER_REAL = r"C:\Phd(Reza)\Dataset\AC-FAS\Train\Real"
-TRAIN_FOLDER_SPOOF = [r"C:\Phd(Reza)\Dataset\AC-FAS\Train\Spoof"]  # [] for pure one-class training
+TRAIN_FOLDER_REAL = r"..\..\Real"
+TRAIN_FOLDER_SPOOF = [r"..\..\Spoof"]  # [] for pure one-class training
 
-SAVE_DIR = r"C:\Phd(Reza)\AC-FAS\checkpoints\run1"
+SAVE_DIR = r"..\checkpoints\run1"
 
 BATCH_SIZE = 32
 NUM_EPOCHS = 100
