@@ -19,7 +19,7 @@ from wfrf import wfrf_eval_batch
 # ==========================================
 # CONFIG — edit these directly, no argparse
 # ==========================================
-CHECKPOINT_PATH = r"C:\Phd(Reza)\AC-FAS\checkpoints\run1\model_best.pth"
+CHECKPOINT_PATH = r"..\..\model.pth"
 
 # Validation set (real faces ONLY) used to pick the anomaly threshold tau,
 # per the paper: "determined from scores obtained on a validation set
@@ -28,8 +28,8 @@ CHECKPOINT_PATH = r"C:\Phd(Reza)\AC-FAS\checkpoints\run1\model_best.pth"
 VAL_FOLDER_REAL = r"C:\Phd(Reza)\Dataset\AC-FAS\Val\Real"
 
 # Test set: real + spoof, used for final reporting.
-TEST_FOLDER_REAL = r"C:\Phd(Reza)\Dataset\AC-FAS\Test\Real"
-TEST_FOLDER_SPOOF = [r"C:\Phd(Reza)\Dataset\AC-FAS\Test\Spoof"]
+TEST_FOLDER_REAL = r"..\..\Real"
+TEST_FOLDER_SPOOF = [r"..\..\Spoof"]
 
 BATCH_SIZE = 32
 
