@@ -25,7 +25,7 @@ CHECKPOINT_PATH = r"..\..\model.pth"
 # per the paper: "determined from scores obtained on a validation set
 # consisting exclusively of real faces ... without the need for spoof
 # labels at test time."
-VAL_FOLDER_REAL = r"C:\Phd(Reza)\Dataset\AC-FAS\Val\Real"
+VAL_FOLDER_REAL = r"..\..\Real"
 
 # Test set: real + spoof, used for final reporting.
 TEST_FOLDER_REAL = r"..\..\Real"
