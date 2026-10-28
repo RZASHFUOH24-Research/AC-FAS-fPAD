@@ -1,8 +1,9 @@
 """
 Dataset utilities for AC-FAS.
 
-Loads plain folders of real/live and spoof face images. Labels follow the
-convention used throughout this codebase: 1 = live/real, 0 = spoof.
+Loads plain folders of real/live and spoof face images (sub-folders are
+included). Labels follow the convention used throughout this codebase:
+1 = live/real, 0 = spoof.
 
 Spatial augmentations (crop, flip, jitter, rotation) and ToTensor are done
 per-sample here. WFRF (frequency-domain reweighting) and ImageNet
@@ -22,6 +23,14 @@ from torch.utils.data import DataLoader, Dataset
 IMAGE_SIZE = 224  # matches TinyViT-5M's expected input resolution ('tiny_vit_5m_224')
 VALID_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+
+def normalize_batch(batch: torch.Tensor) -> torch.Tensor:
+    """ImageNet normalisation, applied to a batch after WFRF."""
+    return (batch - IMAGENET_MEAN.to(batch.device)) / IMAGENET_STD.to(batch.device)
+
 
 class FaceImageDataset(Dataset):
     def __init__(self, image_paths, labels, transform=None):
@@ -36,7 +45,7 @@ class FaceImageDataset(Dataset):
         img_path = self.image_paths[idx]
         image_bgr = cv2.imread(img_path)
         if image_bgr is None:
-            return torch.zeros((3, IMAGE_SIZE, IMAGE_SIZE)), self.labels[idx]
+            raise RuntimeError(f"Cannot read image: {img_path}")
 
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         image_rgb = Image.fromarray(cv2.resize(image_rgb, (IMAGE_SIZE, IMAGE_SIZE)))
@@ -46,7 +55,23 @@ class FaceImageDataset(Dataset):
 
 
 def _list_images(folder):
-    return [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(VALID_EXTENSIONS)]
+    """All images under `folder`, including sub-folders, in a fixed (sorted) order."""
+    out = []
+    for root, _, files in os.walk(folder):
+        out += [os.path.join(root, f) for f in files if f.lower().endswith(VALID_EXTENSIONS)]
+    return sorted(out)
+
+
+def _collect(real_dir, spoof_dirs):
+    real_paths = _list_images(real_dir)
+    spoof_paths = []
+    for d in spoof_dirs:
+        if os.path.exists(d):
+            spoof_paths.extend(_list_images(d))
+    paths = real_paths + spoof_paths
+    labels = [1] * len(real_paths) + [0] * len(spoof_paths)
+    print(f"{real_dir}: real {len(real_paths)} | spoof {len(spoof_paths)}")
+    return paths, labels
 
 
 def build_train_transform():
@@ -68,29 +93,23 @@ def build_eval_transform():
 
 def build_train_loader(real_dir, spoof_dirs, batch_size, shuffle=True, num_workers=0):
     """`real_dir`: folder of live images. `spoof_dirs`: list of one or more
-    folders of spoof images (empty list => pure one-class training)."""
-    real_paths = _list_images(real_dir)
-    spoof_paths = []
-    for d in spoof_dirs:
-        if os.path.exists(d):
-            spoof_paths.extend(_list_images(d))
+    folders of spoof images (empty list => strict one-class training).
 
-    paths = real_paths + spoof_paths
-    labels = [1] * len(real_paths) + [0] * len(spoof_paths)
-
+    drop_last=True avoids a size-1 final batch, which the BatchNorm layer of
+    the projection head cannot process in training mode."""
+    paths, labels = _collect(real_dir, spoof_dirs)
     dataset = FaceImageDataset(paths, labels, build_train_transform())
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
 
 def build_eval_loader(real_dir, spoof_dirs, batch_size, num_workers=0):
-    real_paths = _list_images(real_dir)
-    spoof_paths = []
-    for d in spoof_dirs:
-        if os.path.exists(d):
-            spoof_paths.extend(_list_images(d))
-
-    paths = real_paths + spoof_paths
-    labels = [1] * len(real_paths) + [0] * len(spoof_paths)
-
+    paths, labels = _collect(real_dir, spoof_dirs)
     dataset = FaceImageDataset(paths, labels, build_eval_transform())
     return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
