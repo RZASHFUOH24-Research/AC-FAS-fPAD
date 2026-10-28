@@ -14,61 +14,35 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # --------------------------------------------------------------------------
-# Which layers to use for the cross-layer attention-consistency score C(x).
+# Layers used for the cross-layer attention-consistency score C(x).
 #
-# The paper defines C(x) generically over a set of selected layers
-# L = {l_1, ..., l_M}, without pinning down M or the exact layers in the
-# main text, but its KL-divergence formula requires every selected layer's
-# attention signature a^l to live in the SAME simplex Delta^{N-1} — i.e.
-# every selected layer must have the same number of spatial tokens N.
+# C(x) is computed over ALL M = 10 attention blocks of TinyViT-5M
+# (stage 0 is convolutional; stages 1-3 contain 2 + 6 + 2 blocks), as the
+# mean KL divergence between the attention signatures of consecutive blocks
+# (9 KL terms).
 #
-# This matters because it is NOT true of arbitrary layer pairs in TinyViT-5M,
-# for two independent reasons verified against the actual installed timm
-# implementation:
+# For a 224x224 input the three transformer stages work on token grids of
+# 28x28, 14x14 and 7x7. Stage 1 uses windowed attention (7x7 windows ->
+# 16 windows of 49 tokens, folded into the batch dimension); in stages 2 and
+# 3 the window covers the whole grid, so attention is effectively global.
 #
-# 1) Token count N differs by stage:
-#      stage 0: no attention (conv/MBConv blocks)
-#      stage 1: N = 49   (7x7, WINDOWED attention, 2 blocks)
-#      stage 2: N = 196  (14x14, WINDOWED attention, 6 blocks)
-#      stage 3: N = 49   (7x7, GLOBAL attention, 2 blocks)
-#    An earlier draft of this pipeline hooked stage 2 and stage 3 directly
-#    and reconciled the N=196 vs N=49 mismatch by truncating both
-#    signatures to their first 49 entries before taking a divergence — this
-#    is NOT a valid KL divergence between two distributions over the same
-#    support, and does not match the paper's Delta^{N-1} formulation.
-#
-# 2) Windowed stages fold the (batch, num_windows) dims together before
-#    calling attention: a captured attention tensor from a windowed layer
-#    has shape (B * num_windows, heads, N, N), not (B, heads, N, N) — so
-#    even a windowed layer with a *matching* N is not directly comparable,
-#    batch-index for batch-index, to a non-windowed layer's output without
-#    extra unwindowing logic.
-#
-# Both issues are avoided by selecting two blocks WITHIN the final stage
-# (stage 3), which performs global (non-windowed) self-attention over the
-# whole 7x7=49-token feature map — Fig. 1 explicitly ties the pipeline's
-# selected layers to this global-attention stage. We use stage 3's first
-# and last block, both with clean (B, heads, 49, 49) output and no window
-# folding. (Note: the paper's Fig. 1 caption states this stage produces
-# "14x14 = 196" tokens, which does not match what we measure here (49) —
-# this looks like an artifact of the manuscript text rather than the
-# actual architecture. If your own training run used a different layer
-# pair — e.g. a different input resolution that changes the final grid to
-# 14x14 — update ATTENTION_HOOK_PATHS to match your setup.)
-#
-# If you use more than 2 layers, every entry in ATTENTION_HOOK_PATHS must
-# still resolve to matching N *and* matching (non-windowed) batch
-# semantics — the rest of the pipeline (attention_signature,
-# attention_consistency_score) generalises to any number of layers >= 2 as
-# long as that holds.
+# Every block's signature is therefore placed back on its full token grid and
+# mapped to the common 7x7 grid by mass-preserving sum pooling, so that every
+# KL term compares two distributions on the same simplex Delta^48.
 # --------------------------------------------------------------------------
-ATTENTION_HOOK_PATHS = [
-    "stages.3.blocks.0.attn",  # first block of stage 3 (global attention, N=49)
-    "stages.3.blocks.-1.attn",  # last block of stage 3 (global attention, N=49)
-]
+COMMON_GRID = 7  # common spatial grid of the pooled signatures (N = 49)
 
 PROJECTED_EMBEDDING_DIM = 128  # p in the paper (Section III-E)
-BACKBONE_EMBEDDING_DIM = 320  # d = 320, TinyViT-5M CLS/pooled feature dim
+BACKBONE_EMBEDDING_DIM = 320  # d = 320, TinyViT-5M globally pooled feature dim
+
+
+def all_attention_paths(backbone: nn.Module):
+    """Paths of ALL attention blocks of TinyViT-5M: stages 1..3 (stage 0 is convolutional)."""
+    paths = []
+    for s in range(1, len(backbone.stages)):
+        for b in range(len(backbone.stages[s].blocks)):
+            paths.append(f"stages.{s}.blocks.{b}.attn")
+    return paths
 
 
 def _resolve_module(root: nn.Module, dotted_path: str) -> nn.Module:
@@ -86,22 +60,17 @@ def _resolve_module(root: nn.Module, dotted_path: str) -> nn.Module:
 # --------------------------------------------------------------------------
 # Attention-weight capture.
 #
-# timm's TinyViT `Attention.forward` computes the attention weights as a
-# purely *local* variable (`attn`), and by default takes a fused
-# scaled-dot-product-attention path (`F.scaled_dot_product_attention`) that
-# never materialises an explicit (B, heads, N, N) attention-probability
-# tensor at all — so a plain forward hook cannot recover it (verified
-# against timm's tiny_vit.py source directly).
-#
-# We therefore monkey-patch each selected Attention module's `forward` with
-# an equivalent implementation (mirroring timm's non-fused branch exactly)
-# that additionally stashes the post-softmax attention weights on the
-# module as `self.last_attn_weights`, of shape (B, num_heads, N, N).
+# timm's TinyViT `Attention.forward` may take a fused
+# scaled-dot-product-attention path that never materialises the attention
+# probabilities, so a plain forward hook cannot recover them. Each attention
+# module's `forward` is therefore replaced with an equivalent explicit
+# implementation (mirroring timm's non-fused branch) that additionally stores
+# the post-softmax attention weights as `self.last_attn_weights`, of shape
+# (B * num_windows, num_heads, N, N).
 #
 # This depends on TinyViT's internal attribute names (`norm`, `qkv`, `scale`,
 # `num_heads`, `key_dim`, `val_dim`, `out_dim`, `proj`,
-# `get_attention_biases`, `attention_bias_idxs`) as of timm's tiny_vit
-# implementation. If you upgrade timm and this breaks, run
+# `get_attention_biases`). If you upgrade timm and this breaks, run
 # `import inspect, timm; from timm.models import tiny_vit;
 # print(inspect.getsource(tiny_vit.Attention.forward))` and update
 # `_patched_attention_forward` below to match.
@@ -121,7 +90,7 @@ def _patched_attention_forward(self, x):
     attn = attn + attn_bias
     attn = attn.softmax(dim=-1)
 
-    self.last_attn_weights = attn  # (B, num_heads, N, N) -- captured for C(x)
+    self.last_attn_weights = attn  # (B * n_windows, num_heads, N, N) -- captured for C(x)
 
     x = attn @ v
     x = x.transpose(1, 2).reshape(B, N, self.out_dim)
@@ -130,20 +99,21 @@ def _patched_attention_forward(self, x):
 
 
 class AttentionMapExtractor:
-    """Patches the selected attention submodules to record their post-softmax
-    attention-weight tensors on every forward pass, and exposes them via
-    `get()`. Call `clear()` before each forward pass and `remove()` when
-    done to restore the original (fused-capable) forward methods."""
+    """Patches the attention submodules (all blocks by default) to record their
+    post-softmax attention-weight tensors on every forward pass, and exposes
+    them via `get()`. Call `clear()` before each forward pass and `remove()`
+    when done to restore the original forward methods."""
 
-    def __init__(self, backbone: nn.Module, hook_paths=ATTENTION_HOOK_PATHS):
-        self.hook_paths = hook_paths
+    REQUIRED = ("qkv", "norm", "proj", "get_attention_biases", "num_heads", "key_dim", "val_dim", "scale", "out_dim")
+
+    def __init__(self, backbone: nn.Module, hook_paths=None):
+        self.hook_paths = hook_paths if hook_paths is not None else all_attention_paths(backbone)
         self._modules = []
         self._original_forwards = []
 
-        for path in hook_paths:
+        for path in self.hook_paths:
             attn_module = _resolve_module(backbone, path)
-            required = ("qkv", "norm", "proj", "get_attention_biases", "num_heads", "key_dim", "val_dim", "scale")
-            missing = [r for r in required if not hasattr(attn_module, r)]
+            missing = [r for r in self.REQUIRED if not hasattr(attn_module, r)]
             if missing:
                 raise AttributeError(
                     f"Module at '{path}' is missing expected TinyViT-Attention attributes {missing}. "
@@ -160,9 +130,18 @@ class AttentionMapExtractor:
         for m in self._modules:
             m.last_attn_weights = None
 
-    def get(self, hook_paths=None):
-        """Returns captured attention maps (detached) in hook order."""
-        return [m.last_attn_weights.detach() if m.last_attn_weights is not None else None for m in self._modules]
+    def get(self):
+        """Returns the captured attention maps in block order.
+
+        NOT detached: during training the gradients of L_AC and L_AM must flow
+        through the attention maps into the backbone."""
+        maps = [m.last_attn_weights for m in self._modules]
+        if any(a is None for a in maps):
+            raise RuntimeError(
+                "Attention maps were not captured. Call clear() before the forward pass and check "
+                "AttentionMapExtractor against your installed timm version."
+            )
+        return maps
 
     def remove(self):
         for module, original_forward in self._original_forwards:
@@ -171,27 +150,48 @@ class AttentionMapExtractor:
         self._original_forwards = []
 
 
-def attention_signature(attn_weights: torch.Tensor) -> torch.Tensor:
-    """Computes the per-layer attention signature a^l.
+def attention_signature(attn_weights: torch.Tensor, batch_size: int) -> torch.Tensor:
+    """Computes the pooled attention signature of one block on the common grid.
 
     Args:
-        attn_weights: (B, heads, N, N) softmax attention probabilities.
+        attn_weights: (batch_size * n_windows, heads, N, N) softmax attention
+            probabilities (n_windows = 1 for global attention).
+        batch_size: number of images in the batch.
+
+    Steps:
+        1) mean over heads, then mean over query tokens -> a distribution over
+           the N tokens of each window;
+        2) windows are placed back on the full token grid and averaged (each
+           window contributes one distribution);
+        3) the grid is sum-pooled to COMMON_GRID x COMMON_GRID (mass-preserving)
+           and renormalised against numerical drift.
 
     Returns:
-        (B, N) tensor, each row a probability distribution over the N
-        spatial tokens (lies on the simplex Delta^{N-1}).
+        (batch_size, COMMON_GRID ** 2) tensor, each row a probability
+        distribution on the simplex Delta^48.
     """
-    head_avg = attn_weights.mean(dim=1)  # (B, N, N) -- average over heads
-    signature = head_avg.mean(dim=1)  # (B, N) -- average over query tokens
-    # Each row of head_avg already sums to 1 (softmax outputs); the mean of
-    # valid distributions is itself a valid distribution, so no renormalisation
-    # is strictly required, but we normalise defensively against numerical drift.
-    signature = signature / signature.sum(dim=-1, keepdim=True).clamp_min(1e-8)
-    return signature
+    bw, _, n, _ = attn_weights.shape
+    n_win = bw // batch_size
+    ws = int(round(n ** 0.5))  # window side
+    nh = int(round(n_win ** 0.5))  # windows per side
+    assert bw == batch_size * n_win and ws * ws == n and nh * nh == n_win, \
+        f"Unexpected attention shape {tuple(attn_weights.shape)} for batch_size={batch_size}"
+
+    s = attn_weights.mean(dim=1).mean(dim=1)  # (B * n_win, N)
+    s = s.view(batch_size, nh, nh, ws, ws).permute(0, 1, 3, 2, 4).reshape(batch_size, 1, nh * ws, nh * ws)
+    s = s / (nh * nh)  # windows -> one distribution over the full grid
+
+    grid = nh * ws
+    assert grid % COMMON_GRID == 0, f"Token grid {grid}x{grid} is not divisible by {COMMON_GRID}"
+    k = grid // COMMON_GRID
+    if k > 1:
+        s = F.avg_pool2d(s, k) * (k * k)  # sum pooling
+    s = s.flatten(1)
+    return s / s.sum(dim=-1, keepdim=True).clamp_min(1e-8)
 
 
 class ProjectionHead(nn.Module):
-    """phi(z) = LayerNorm(W2 * sigma(W1*z + b1) + b2) — Section III-E."""
+    """phi(z) = LayerNorm(W2 * Dropout(ReLU(BN(W1*z + b1))) + b2) — Section III-E."""
 
     def __init__(self, in_dim: int = BACKBONE_EMBEDDING_DIM, hidden_dim: int = 512, out_dim: int = PROJECTED_EMBEDDING_DIM, dropout: float = 0.4):
         super().__init__()
@@ -204,7 +204,7 @@ class ProjectionHead(nn.Module):
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         x = self.fc1(z)
         x = self.bn1(x)
-        x = F.relu(x, inplace=True)
+        x = F.relu(x)
         x = self.dropout(x)
         x = self.fc2(x)
         return self.layer_norm(x)
@@ -214,9 +214,9 @@ class ACFASModel(nn.Module):
     """TinyViT-5M backbone + projection head. Attention maps are captured
     separately via `AttentionMapExtractor` (attached to `self.backbone`)."""
 
-    def __init__(self):
+    def __init__(self, pretrained: bool = True):
         super().__init__()
-        self.backbone = timm.create_model("tiny_vit_5m_224", pretrained=True, num_classes=0)
+        self.backbone = timm.create_model("tiny_vit_5m_224", pretrained=pretrained, num_classes=0)
         self.head = ProjectionHead()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
