@@ -1,6 +1,6 @@
 # AC-FAS: Attention Consistency for Semi-Supervised One-Class Face Anti-Spoofing
 
-**Status:** Under review (IEEE Transactions on Artificial Intelligence).
+**Status:** Under review (IEEE Transactions on Biometrics, Behavior, and Identity Science).
 
 
 ## Abstract
@@ -31,40 +31,54 @@ Extensive experiments on multiple benchmarks, including OULU-NPU, SiW-Mv2,
 and WMCA, demonstrate that AC-FAS consistently outperforms state-of-the-art
 methods across intra-domain and leave-one-attack-out (LOAO) protocols,
 including a combined cross-domain LOAO setting, effectively detecting both
-known and novel presentation attacks. Notably, AC-FAS achieves a
-state-of-the-art ACER of 0.08% on OULU-NPU and reduces the average ACER by
-approximately 35% over the strongest competing method under the most
-challenging cross-domain protocol, whilst maintaining a near-perfect AUC of
-97.47% on the SiW-Mv2 leave-one-attack-out benchmark.
+known and novel presentation attacks. Notably, AC-FAS achieves an ACER of
+0.30% on OULU-NPU and reduces the average HTER by approximately 35% over
+the strongest competing method under the most challenging cross-domain
+protocol, whilst maintaining an AUC of 97.47% on the SiW-Mv2
+leave-one-attack-out benchmark.
 
 ## Method Overview
 
-![AC-FAS attention-consistency pipeline](images/Attention.jpg)
+<p align="center">
+  <img src="images/AC-FAS-Overview.jpg" alt="Overview of the AC-FAS framework" width="90%">
+</p>
+<p align="center">
+  <em>Figure 1. Overview of the AC-FAS framework.</em>
+</p>
 
 AC-FAS reframes face anti-spoofing as **semi-supervised one-class anomaly
 detection**: it models the normality of *live* faces, optionally using a
 limited set of labelled spoof samples to sharpen the boundary. Three
 components:
 
-1. **WFRF (Weighted Frequency Response Filtering)** — a Fourier-domain
+1. **WFRF (Weighted Frequency Response Filtering)**: a Fourier-domain
    reweighting of the input image using a square (Chebyshev-distance)
    mask, applied dually as deterministic preprocessing (fixed weights) and
-   stochastic training-time augmentation (randomly resampled weights).
-
-   ![WFRF pipeline](images/WFRF.jpg)
-2. **Cross-layer Attention Consistency** — the KL divergence between the
-   spatial-attention signatures of two selected transformer layers is used
-   as a domain-agnostic liveness signal: live faces are regularised toward
-   low divergence (`L_AC^r`), and a margin loss (`L_AM`) widens the gap
-   between live and spoof consistency scores.
-3. **Manhattan (L1-norm) Compactness Loss** — live embeddings are pulled
+   stochastic training-time augmentation (randomly resampled weights);
+   see Figure 2.
+2. **Cross-layer Attention Consistency**: the attention signatures of all
+   ten transformer blocks of TinyViT-5M are mapped to a common 7×7 grid,
+   and the mean KL divergence between consecutive blocks, `C(x)`, is used
+   as a liveness signal. Live faces are regularised toward low divergence
+   (`L_AC^r`), and a margin loss (`L_AM`) widens the gap between live and
+   spoof consistency scores.
+3. **Manhattan (L1-norm) Compactness Loss**: live embeddings are pulled
    within an L1 ball of radius `r` around a fixed center `c` (computed via
    a warm-up pass); spoof embeddings are pushed beyond margin `m`.
 
 At inference, the anomaly score is
 `S(x) = alpha_s * ||z~(x) - c||_1 + beta_s * C(x)`, thresholded against a
-value `tau` selected from a real-only validation set (no spoof labels
-needed at test time).
+value `tau` (the 95th percentile of the scores of a real-only validation
+set), so no spoof labels are needed for calibration.
+
+### Weighted Frequency Response Filtering (WFRF)
+
+<p align="center">
+  <img src="images/WFRF.jpg" alt="WFRF pipeline" width="90%">
+</p>
+<p align="center">
+  <em>Figure 2. The WFRF pipeline: the image is transformed to the frequency domain, reweighted with the Chebyshev-distance mask, and reconstructed with the inverse Fourier transform.</em>
+</p>
 
 ## Repository Structure
 
@@ -74,47 +88,69 @@ AC-FAS_fPAD/
 ├── requirements.txt
 ├── .gitignore
 ├── src/
-│   ├── wfrf.py       # Weighted Frequency Response Filtering (Eqs. 2-6, Algorithm 1 dual-mode)
-│   ├── model.py       # TinyViT-5M backbone, projection head, attention-map capture
-│   ├── losses.py       # Manhattan compactness loss, attention consistency / margin losses
+│   ├── wfrf.py          # Weighted Frequency Response Filtering (deterministic / stochastic)
+│   ├── model.py         # TinyViT-5M backbone, projection head, attention-map capture and signatures
+│   ├── losses.py        # Manhattan compactness loss, warm-up centre, attention consistency / margin losses
 │   ├── dataset.py       # Folder-based real/spoof dataset loading
-│   ├── train.py         # Main training script (Algorithm 1) — no CLI args, edit CONFIG block
+│   ├── train.py         # Training script (Algorithm 1)
 │   └── evaluate.py      # Anomaly score, threshold selection, APCER/BPCER/ACER/HTER/AUC
 ├── data/README.md
 ├── results/README.md
-└── images/README.md
+└── images/
+    ├── AC-FAS-Overview.jpg   # Figure 1
+    └── WFRF.jpg              # Figure 2
 ```
 
-No `argparse` is used anywhere — every script has a `CONFIG` block near the
+No `argparse` is used anywhere: every script has a `CONFIG` block near the
 top; edit the paths/hyperparameters directly and run the file.
 
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/AC-FAS_fPAD.git
+git clone https://github.com/RZASHFUOH24-Research/AC-FAS_fPAD.git
 cd AC-FAS_fPAD
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## Data Preparation
+
+Each split is a plain folder of face images (sub-folders are allowed):
+
+```
+Train_Real/    Train_Spoof/     # training
+Val_Real/                       # real faces only, used to select tau
+Test_Real/     Test_Spoof/      # testing
+```
+
+Labels are assigned by folder (1 = live, 0 = spoof). The validation folder
+must be disjoint from the test folders.
+
 ## Usage
 
-1. Edit the `CONFIG` block at the top of `src/train.py` (dataset paths,
-   `SAVE_DIR`, batch size, epochs, etc.) and run:
+1. Edit the `CONFIG` block at the top of `src/train.py` (dataset folders,
+   `SAVE_DIR`, `SEED`) and run:
    ```bash
    python src/train.py
    ```
+   A checkpoint (model weights and the fixed centre `c`) is saved after
+   every epoch. The reported results use the final checkpoint (epoch 100)
+   and are averaged over five runs with different seeds.
+   For the strict one-class variant (live faces only), set
+   `TRAIN_FOLDER_SPOOF = []`; all spoof-dependent terms are then removed.
 2. Edit the `CONFIG` block at the top of `src/evaluate.py` (checkpoint
-   path, validation/test folders) and run:
+   path, validation and test folders) and run:
    ```bash
    python src/evaluate.py
    ```
 
-## Confirmed Hyperparameters (Paper §III-D)
+## Hyperparameters
 
 | Symbol | Value | Meaning |
 |---|---|---|
+| Backbone | TinyViT-5M (ImageNet pre-trained), input 224×224 | `d=320` pooled feature → projection head → `p=128` |
+| Projection head | 320 → 512 → 128 | BatchNorm, ReLU, Dropout (0.4), LayerNorm on the output |
 | `r` | 2.0 | live compactness radius |
 | `m` | 20.0 | spoof separation margin |
 | `lambda_l`, `lambda_s` | 1.0, 1.0 | live/spoof term weights in `L_MH` |
@@ -122,67 +158,27 @@ pip install -r requirements.txt
 | `beta` | 0.3 (fixed from epoch 1) | weight on `L_AM` |
 | `lambda_m` | 2.0 | margin in `L_AM` |
 | `alpha_s`, `beta_s` | 0.6, 0.4 | inference score weights |
+| `tau` | 95th percentile | of `S(x)` on the real-only validation set |
 | `p_aug` | 0.5 | probability of WFRF stochastic-augmentation mode per batch |
-| WFRF deterministic | `w_low=0.8`, `w_high=1.75` | |
+| WFRF deterministic | `w_low=0.8`, `w_high=1.75` | used in training, warm-up and inference |
 | WFRF stochastic range | `U(0.5, 2.0)` | independently resampled `w_low`, `w_high` per batch |
-| Backbone | TinyViT-5M | `d=320` CLS feature → projection head → `p=128` |
-| Optimiser | Adam, lr `1e-4`, step ×0.1 at epochs 60, 85 | 100 epochs total |
+| Optimiser | Adam, lr `1e-4`, step ×0.1 at epochs 60, 85 | 100 epochs, batch size 16, gradient-norm clipping at 1.0 |
 
-## Implementation Notes — Corrections Made Against the Draft Code
+## Implementation Notes
 
-An earlier, preliminary training script (TinyViT + a Euclidean two-stage
-loss + a radial "FrequencyBoost" augmentation) was provided as a starting
-point. Per your instruction that the manuscript is authoritative, this
-codebase does **not** reuse that script directly; it re-implements the
-pipeline from the paper's equations and Algorithm 1, correcting several
-concrete mismatches found along the way:
-
-- **Loss norm**: the draft used a squared-L2 ("Euclidean") hinge loss with
-  an implicit center at the origin. The paper specifies an **L1
-  (Manhattan)** hinge loss around a center `c` computed via a warm-up pass
-  over live samples and then held fixed — implemented in
-  `losses.ManhattanCompactnessLoss` / `losses.compute_warmup_center`.
-- **alpha (attention-loss weight)**: the draft ramped to `0.1`; the paper's
-  confirmed value is `alpha_max = 0.5`.
-- **beta (margin-loss weight)**: the draft folded a hardcoded `0.3` weight
-  *inside* the attention loss function, sharing the same ramp schedule as
-  alpha. The paper treats `beta = 0.3` as a **separate, fixed** (non-ramping)
-  coefficient in the total objective from epoch 1 — implemented as such in
-  `train.py`.
-- **WFRF distance metric**: the draft used a **radial (Euclidean)**
-  distance grid for its frequency mask. The paper's WFRF explicitly uses a
-  **square (Chebyshev)** distance, `d(u,v) = max(|u-u_c|, |v-v_c|)` (Eq. 3)
-  — implemented in `wfrf.py`.
-- **WFRF application**: the draft skipped the augmentation outright with
-  probability `1-p`, and used fixed weights when applied. Per Algorithm 1,
-  WFRF is applied to **every** image; only the *mode* (deterministic vs.
-  stochastic weights) is chosen per mini-batch — implemented in
-  `wfrf.wfrf_train_batch`.
-- **Attention consistency score**: the draft computed a proxy from raw
-  attention-block *output* norms. The paper defines `C(x)` as the KL
-  divergence between proper post-softmax attention-weight *signatures* at
-  selected layers (Eq. "consistency"). Extracting genuine attention-weight
-  tensors from TinyViT required patching around two things not obvious
-  from the paper text (see `model.py` for full detail): (a) TinyViT's
-  fused-attention path never materialises attention weights, so `attn`
-  must be captured via a forward-method patch, not a hook; and (b) not
-  every layer pair has matching token count / batch semantics — the code
-  uses stage 3's first and last blocks (both non-windowed, `N=49`), since
-  the originally-implied stage-2/stage-3 pairing has mismatched shapes.
-  If your own runs behind the paper's numbers used a different layer
-  pair, update `ATTENTION_HOOK_PATHS` in `model.py` accordingly.
-- **Projection head**: the paper specifies a final `LayerNorm` on the
-  128-d projected embedding (`phi(z) = LayerNorm(...)`); the draft head
-  had no such layer — added in `model.ProjectionHead`.
-- **Input resolution**: the paper's implementation-details text says
-  images are resized to 256×256, but the backbone name (`tiny_vit_5m_224`)
-  and the draft code both use 224×224. This codebase keeps **224×224** to
-  match the pinned backbone; flag this if your actual training run used
-  256.
-
-All of the above were verified against a live TinyViT-5M forward/backward
-pass during development (shape and gradient-flow checks), not just against
-the paper text.
+- **Attention capture.** TinyViT's fused attention path never materialises
+  the attention weights, so each attention module's `forward` is replaced
+  by an equivalent explicit implementation that also stores the
+  post-softmax weights. The model's outputs and parameters are unchanged.
+  The captured maps are not detached, so `L_AC^r` and `L_AM` train the
+  backbone.
+- **Blocks of different resolution.** The three transformer stages work on
+  28×28, 14×14 and 7×7 token grids (the first with windowed attention).
+  Each block's signature is placed back on its full grid and sum-pooled to
+  7×7, so every KL term compares two distributions over the same 49 cells.
+- **Warm-up centre.** `c` is the mean projected embedding of the real
+  training samples, computed once in evaluation mode with deterministic
+  WFRF and no parameter updates, and then kept fixed.
 
 ## Citation
 
@@ -190,9 +186,8 @@ the paper text.
 @article{acfas_under_review,
   author  = {Sheikhfathollahi, Mohammadreza and Parkinson, Simon and Khan, Saad},
   title   = {{AC-FAS}: Attention Consistency for Semi-Supervised One-Class Face Anti-Spoofing},
-  journal = {IEEE Transactions on Artificial Intelligence},
+  journal = {IEEE Transactions on Biometrics, Behavior, and Identity Science},
   note    = {Under review},
   year    = {2026}
 }
 ```
-
