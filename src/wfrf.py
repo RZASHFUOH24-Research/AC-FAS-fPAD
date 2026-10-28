@@ -8,38 +8,32 @@ Implements Eqs. (2)-(6):
     F'(u,v)     = F(u,v) * W(u,v)                                (Eq. 5)
     x'          = Re(IFFT2(F'))                                  (Eq. 6)
 
-IMPORTANT — this is a *square* (Chebyshev) distance weighting, not a radial
-(Euclidean) one. This is a deliberate correction relative to an earlier,
-draft implementation that used a Euclidean distance grid; the paper is
-explicit that the mask is square-based (Eq. 3).
+The weighting uses a *square* (Chebyshev) distance, not a radial (Euclidean)
+one, as stated in Eq. (3).
 
 Per Algorithm 1, WFRF is applied to *every* image (never skipped), and its
 mode is selected once per mini-batch:
     - with probability p_aug: STOCHASTIC AUGMENTATION — w_low, w_high are
       independently resampled from U(0.5, 2.0) for this batch.
     - otherwise: DETERMINISTIC PREPROCESSING — fixed w_low=0.8, w_high=1.75.
-At inference, only the deterministic mode (w_low=0.8, w_high=1.75) is used.
+The warm-up pass and inference use only the deterministic mode.
 
-WFRF is intentionally implemented as a *batch-level* operation (applied once
-per mini-batch, after collation, on images still in [0, 1] range i.e. before
-ImageNet normalisation) rather than inside the per-sample Dataset transform,
-because the paper's mode selection happens once per mini-batch, not once per
-sample.
+WFRF is a *batch-level* operation (applied once per mini-batch, after
+collation, on images still in [0, 1], i.e. before ImageNet normalisation)
+rather than a per-sample Dataset transform, because the mode is selected once
+per mini-batch, not once per sample.
 """
-
-import math
 
 import torch
 
-# Paper-confirmed deterministic weights (Section III-D, Implementation Details).
+# Deterministic weights (Implementation Details).
 DETERMINISTIC_W_LOW = 0.8
 DETERMINISTIC_W_HIGH = 1.75
 
 # Stochastic augmentation sampling range (Algorithm 1).
 STOCHASTIC_RANGE = (0.5, 2.0)
 
-# Probability of using the stochastic-augmentation mode for a given
-# mini-batch during training (Section III-D: p_aug = 0.5).
+# Probability of using the stochastic-augmentation mode for a given mini-batch.
 P_AUG = 0.5
 
 
@@ -78,7 +72,7 @@ def apply_wfrf(batch: torch.Tensor, w_low: float, w_high: float) -> torch.Tensor
     weighted = fshift * weights
 
     out = torch.fft.ifft2(torch.fft.ifftshift(weighted, dim=(-2, -1)))
-    return torch.clamp(torch.abs(out), 0.0, 1.0)
+    return torch.clamp(out.real, 0.0, 1.0)  # real part (Eq. 6), then clamp to [0, 1]
 
 
 def wfrf_train_batch(batch: torch.Tensor, p_aug: float = P_AUG):
@@ -101,5 +95,5 @@ def wfrf_train_batch(batch: torch.Tensor, p_aug: float = P_AUG):
 
 
 def wfrf_eval_batch(batch: torch.Tensor) -> torch.Tensor:
-    """Applies the fixed deterministic WFRF used at inference / evaluation."""
+    """Applies the fixed deterministic WFRF used for the warm-up pass and at inference."""
     return apply_wfrf(batch, DETERMINISTIC_W_LOW, DETERMINISTIC_W_HIGH)
