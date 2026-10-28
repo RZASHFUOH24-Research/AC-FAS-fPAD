@@ -40,7 +40,7 @@ leave-one-attack-out benchmark.
 ## Method Overview
 
 <p align="center">
-  <img src="images/AC-FAS-Overview.jpg" alt="Overview of the AC-FAS framework" width="90%">
+  <img src="images/AC-FAS-WFRF.jpg" alt="Overview of the AC-FAS framework" width="90%">
 </p>
 <p align="center">
   <em>Figure 1. Overview of the AC-FAS framework.</em>
