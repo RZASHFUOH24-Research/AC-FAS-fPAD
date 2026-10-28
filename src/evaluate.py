@@ -1,57 +1,40 @@
 """
 AC-FAS evaluation — anomaly score S(x) (Eq. score) and the standard FAS
-metrics reported in the paper (Section IV-C / Evaluation Metrics).
+metrics reported in the paper (Evaluation Metrics).
 
 No CLI arguments by design: edit the CONFIG block below directly.
 """
-
-import os
 
 import numpy as np
 import torch
 from sklearn.metrics import roc_auc_score
 
-from dataset import build_eval_loader
+from dataset import build_eval_loader, normalize_batch
 from losses import attention_consistency_score
-from model import ACFASModel, AttentionMapExtractor, ATTENTION_HOOK_PATHS
+from model import ACFASModel, AttentionMapExtractor
 from wfrf import wfrf_eval_batch
 
 # ==========================================
 # CONFIG — edit these directly, no argparse
 # ==========================================
-CHECKPOINT_PATH = r"..\..\model.pth"
+CHECKPOINT_PATH = r"..\checkpoints\run1\model_ep100.pth"
 
-# Validation set (real faces ONLY) used to pick the anomaly threshold tau,
-# per the paper: "determined from scores obtained on a validation set
-# consisting exclusively of real faces ... without the need for spoof
-# labels at test time."
-VAL_FOLDER_REAL = r"..\..\Real"
+# Validation set (real faces ONLY) used to pick the anomaly threshold tau:
+# no spoof labels are needed for calibration.
+VAL_FOLDER_REAL = r"..\..\Val_Real"
 
 # Test set: real + spoof, used for final reporting.
-TEST_FOLDER_REAL = r"..\..\Real"
-TEST_FOLDER_SPOOF = [r"..\..\Spoof"]
+TEST_FOLDER_REAL = r"..\..\Test_Real"
+TEST_FOLDER_SPOOF = [r"..\..\Test_Spoof"]
 
 BATCH_SIZE = 32
 
-# Anomaly-score weighting (Eq. score) — paper-confirmed values.
+# Anomaly-score weighting (Eq. score).
 ALPHA_S = 0.6  # weight on the Manhattan (L1) distance term
 BETA_S = 0.4  # weight on the attention-inconsistency term
 
-# Threshold selection strategy on the real-only validation set: tau is set
-# to the q-th percentile of validation (real) anomaly scores, so that a
-# chosen fraction of real faces are accepted. The paper does not pin a
-# specific quantile in the main text; 95th percentile (~5% FRR budget on
-# validation) is a common, reasonable default — adjust to match your setup.
+# tau = 95th percentile of the anomaly scores of the real-only validation set.
 VAL_PERCENTILE = 95.0
-
-IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-
-
-def normalize_batch(batch: torch.Tensor, device) -> torch.Tensor:
-    mean = IMAGENET_MEAN.to(device)
-    std = IMAGENET_STD.to(device)
-    return (batch - mean) / std
 
 
 @torch.no_grad()
@@ -65,16 +48,13 @@ def compute_scores(model, attn_extractor, center, loader, device):
     for images, labels in loader:
         images = images.to(device)
 
-        wfrf_images = wfrf_eval_batch(images)
-        wfrf_images = normalize_batch(wfrf_images, device)
+        wfrf_images = normalize_batch(wfrf_eval_batch(images))
 
         attn_extractor.clear()
         projected = model(wfrf_images)
-        attn_maps = attn_extractor.get(ATTENTION_HOOK_PATHS)
+        c_scores = attention_consistency_score(attn_extractor.get(), wfrf_images.shape[0])
 
         l1_dist = torch.norm(projected - center, p=1, dim=1)
-        c_scores = attention_consistency_score(attn_maps)
-
         scores = ALPHA_S * l1_dist + BETA_S * c_scores
 
         all_scores.append(scores.cpu().numpy())
@@ -105,6 +85,7 @@ def compute_metrics(scores: np.ndarray, labels: np.ndarray, tau: float) -> dict:
     far, frr = apcer, bpcer
     hter = (far + frr) / 2
 
+    # Live is the positive class; a lower anomaly score means "more live".
     auc = roc_auc_score(labels, -scores) if is_live.any() and is_spoof.any() else float("nan")
 
     return {"APCER": apcer, "BPCER": bpcer, "ACER": acer, "HTER": hter, "AUC": auc}
@@ -114,12 +95,12 @@ def evaluate():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    model = ACFASModel().to(device)
+    model = ACFASModel(pretrained=False).to(device)  # weights come from the checkpoint
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     center = checkpoint["center"].to(device)
 
-    attn_extractor = AttentionMapExtractor(model.backbone)
+    attn_extractor = AttentionMapExtractor(model.backbone)  # all 10 attention blocks
 
     val_loader = build_eval_loader(VAL_FOLDER_REAL, [], BATCH_SIZE)
     val_scores, _ = compute_scores(model, attn_extractor, center, val_loader, device)
